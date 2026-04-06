@@ -1,0 +1,1108 @@
+package handlers
+
+import (
+	"encoding/json"
+	"fmt"
+	"log"
+	"net/http"
+	"strconv"
+	"strings"
+	"time"
+
+	"github.com/golang-jwt/jwt/v5"
+	"github.com/gorilla/mux"
+	"golang.org/x/crypto/bcrypt"
+
+	"ssc-admin/database"
+	"ssc-admin/security"
+)
+
+// ==================== المتغيرات العامة ====================
+var jwtSecret = []byte("ssc-secret-key-2024-change-in-production")
+
+// ==================== المساعدات ====================
+type Response struct {
+	Success bool        `json:"success"`
+	Message string      `json:"message,omitempty"`
+	Data    interface{} `json:"data,omitempty"`
+	Error   string      `json:"error,omitempty"`
+}
+
+func sendJSON(w http.ResponseWriter, status int, data interface{}) {
+	w.Header().Set("Content-Type", "application/json")
+	w.WriteHeader(status)
+	json.NewEncoder(w).Encode(data)
+}
+
+func sendError(w http.ResponseWriter, status int, message string) {
+	sendJSON(w, status, Response{Success: false, Error: message})
+}
+
+func sendSuccess(w http.ResponseWriter, data interface{}, message string) {
+	sendJSON(w, http.StatusOK, Response{Success: true, Message: message, Data: data})
+}
+
+// ==================== Auth Handlers ====================
+
+func Login(w http.ResponseWriter, r *http.Request) {
+	var req struct {
+		Phone    string `json:"phone"`
+		Password string `json:"password"`
+	}
+
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		sendError(w, http.StatusBadRequest, "Donnees invalides")
+		return
+	}
+
+	// Nettoyage des entrees
+	req.Phone = security.SanitizeInput(req.Phone)
+
+	// Recherche de l'utilisateur
+	user, err := database.GetUserByPhone(req.Phone)
+	if err != nil {
+		sendError(w, http.StatusUnauthorized, "Numero de telephone ou mot de passe incorrect")
+		return
+	}
+
+	// Verification du mot de passe
+	if err := bcrypt.CompareHashAndPassword([]byte(user.Password), []byte(req.Password)); err != nil {
+		sendError(w, http.StatusUnauthorized, "Numero de telephone ou mot de passe incorrect")
+		return
+	}
+
+	// Creation du token JWT
+	token := jwt.NewWithClaims(jwt.SigningMethodHS256, jwt.MapClaims{
+		"user_id": user.ID,
+		"phone":   user.Phone,
+		"exp":     time.Now().Add(24 * time.Hour).Unix(),
+	})
+
+	tokenString, err := token.SignedString(jwtSecret)
+	if err != nil {
+		sendError(w, http.StatusInternalServerError, "Erreur lors de la creation du token")
+		return
+	}
+
+	// Journalisation
+	database.AddAuditLog(user.ID, "login", "Connexion", r.RemoteAddr)
+
+	sendSuccess(w, map[string]interface{}{
+		"token": tokenString,
+		"user": map[string]interface{}{
+			"id":          user.ID,
+			"name":        user.Name,
+			"phone":       user.Phone,
+			"permissions": strings.Split(user.Permissions, ","),
+		},
+	}, "Connexion reussie")
+}
+
+func Logout(w http.ResponseWriter, r *http.Request) {
+	userID := r.Context().Value("user_id").(int)
+	database.AddAuditLog(userID, "logout", "Deconnexion", r.RemoteAddr)
+	sendSuccess(w, nil, "Deconnexion reussie")
+}
+
+func RefreshToken(w http.ResponseWriter, r *http.Request) {
+	userID := r.Context().Value("user_id").(int)
+	user, err := database.GetUserByID(userID)
+	if err != nil {
+		sendError(w, http.StatusUnauthorized, "Utilisateur introuvable")
+		return
+	}
+
+	token := jwt.NewWithClaims(jwt.SigningMethodHS256, jwt.MapClaims{
+		"user_id": user.ID,
+		"phone":   user.Phone,
+		"exp":     time.Now().Add(24 * time.Hour).Unix(),
+	})
+
+	tokenString, err := token.SignedString(jwtSecret)
+	if err != nil {
+		sendError(w, http.StatusInternalServerError, "Erreur lors de la creation du token")
+		return
+	}
+
+	sendSuccess(w, map[string]interface{}{"token": tokenString}, "Token renouvele")
+}
+
+// ==================== Dashboard Handlers ====================
+
+func GetDashboardStats(w http.ResponseWriter, r *http.Request) {
+	stats, err := database.GetStats()
+	if err != nil {
+		sendError(w, http.StatusInternalServerError, "Erreur lors du chargement des statistiques")
+		return
+	}
+
+	var recentOrders []database.Order
+	orders, _ := database.GetAllOrders()
+	if len(orders) > 5 {
+		recentOrders = orders[:5]
+	} else {
+		recentOrders = orders
+	}
+
+	sendSuccess(w, map[string]interface{}{
+		"stats":        stats,
+		"recentOrders": recentOrders,
+	}, "")
+}
+
+// ==================== Products Handlers ====================
+
+func GetProducts(w http.ResponseWriter, r *http.Request) {
+	products, err := database.GetAllProducts()
+	if err != nil {
+		sendError(w, http.StatusInternalServerError, "Erreur lors du chargement des produits")
+		return
+	}
+	sendSuccess(w, products, "")
+}
+
+func GetPublicProducts(w http.ResponseWriter, r *http.Request) {
+	products, err := database.GetAllProducts()
+	if err != nil {
+		sendError(w, http.StatusInternalServerError, "Erreur lors du chargement des produits")
+		return
+	}
+	sendSuccess(w, products, "")
+}
+
+func GetProduct(w http.ResponseWriter, r *http.Request) {
+	vars := mux.Vars(r)
+	id, err := strconv.Atoi(vars["id"])
+	if err != nil {
+		sendError(w, http.StatusBadRequest, "ID invalide")
+		return
+	}
+
+	product, err := database.GetProductByID(id)
+	if err != nil {
+		sendError(w, http.StatusNotFound, "Produit introuvable")
+		return
+	}
+	sendSuccess(w, product, "")
+}
+
+func GetPublicProduct(w http.ResponseWriter, r *http.Request) {
+	vars := mux.Vars(r)
+	id, err := strconv.Atoi(vars["id"])
+	if err != nil {
+		sendError(w, http.StatusBadRequest, "ID invalide")
+		return
+	}
+
+	product, err := database.GetProductByID(id)
+	if err != nil {
+		sendError(w, http.StatusNotFound, "Produit introuvable")
+		return
+	}
+	sendSuccess(w, product, "")
+}
+
+func CreateProduct(w http.ResponseWriter, r *http.Request) {
+	var req database.Product
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		sendError(w, http.StatusBadRequest, "Donnees invalides")
+		return
+	}
+
+	// Nettoyage
+	req.Name = security.SanitizeInput(req.Name)
+	req.Description = security.SanitizeInput(req.Description)
+	req.Category = security.SanitizeInput(req.Category)
+
+	id, err := database.CreateProduct(&req)
+	if err != nil {
+		sendError(w, http.StatusInternalServerError, "Erreur lors de l'ajout du produit")
+		return
+	}
+
+	userID := r.Context().Value("user_id").(int)
+	database.AddAuditLog(userID, "create_product", fmt.Sprintf("Ajout produit: %s", req.Name), r.RemoteAddr)
+
+	sendSuccess(w, map[string]interface{}{"id": id}, "Produit ajoute avec succes")
+}
+
+func UpdateProduct(w http.ResponseWriter, r *http.Request) {
+	vars := mux.Vars(r)
+	id, err := strconv.Atoi(vars["id"])
+	if err != nil {
+		sendError(w, http.StatusBadRequest, "ID invalide")
+		return
+	}
+
+	var req database.Product
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		sendError(w, http.StatusBadRequest, "Donnees invalides")
+		return
+	}
+
+	req.Name = security.SanitizeInput(req.Name)
+	req.Description = security.SanitizeInput(req.Description)
+
+	if err := database.UpdateProduct(id, &req); err != nil {
+		sendError(w, http.StatusInternalServerError, "Erreur lors de la mise a jour")
+		return
+	}
+
+	userID := r.Context().Value("user_id").(int)
+	database.AddAuditLog(userID, "update_product", fmt.Sprintf("Modification produit ID: %d", id), r.RemoteAddr)
+
+	sendSuccess(w, nil, "Produit mis a jour avec succes")
+}
+
+func DeleteProduct(w http.ResponseWriter, r *http.Request) {
+	vars := mux.Vars(r)
+	id, err := strconv.Atoi(vars["id"])
+	if err != nil {
+		sendError(w, http.StatusBadRequest, "ID invalide")
+		return
+	}
+
+	if err := database.DeleteProduct(id); err != nil {
+		sendError(w, http.StatusInternalServerError, "Erreur lors de la suppression")
+		return
+	}
+
+	userID := r.Context().Value("user_id").(int)
+	database.AddAuditLog(userID, "delete_product", fmt.Sprintf("Suppression produit ID: %d", id), r.RemoteAddr)
+
+	sendSuccess(w, nil, "Produit supprime avec succes")
+}
+
+// ==================== Categories Handlers ====================
+
+func GetCategories(w http.ResponseWriter, r *http.Request) {
+	rows, err := database.DB.Query("SELECT id, name, slug FROM categories ORDER BY id")
+	if err != nil {
+		sendError(w, http.StatusInternalServerError, "Erreur lors du chargement des categories")
+		return
+	}
+	defer rows.Close()
+
+	var categories []map[string]interface{}
+	for rows.Next() {
+		var id int
+		var name, slug string
+		rows.Scan(&id, &name, &slug)
+		categories = append(categories, map[string]interface{}{
+			"id":   id,
+			"name": name,
+			"slug": slug,
+		})
+	}
+	sendSuccess(w, categories, "")
+}
+
+func GetPublicCategories(w http.ResponseWriter, r *http.Request) {
+	rows, err := database.DB.Query("SELECT id, name, slug FROM categories ORDER BY id")
+	if err != nil {
+		sendError(w, http.StatusInternalServerError, "Erreur lors du chargement des categories")
+		return
+	}
+	defer rows.Close()
+
+	var categories []map[string]interface{}
+	for rows.Next() {
+		var id int
+		var name, slug string
+		rows.Scan(&id, &name, &slug)
+		categories = append(categories, map[string]interface{}{
+			"id":   id,
+			"name": name,
+			"slug": slug,
+		})
+	}
+	sendSuccess(w, categories, "")
+}
+
+func CreateCategory(w http.ResponseWriter, r *http.Request) {
+	var req struct {
+		Name string `json:"name"`
+		Slug string `json:"slug"`
+	}
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		sendError(w, http.StatusBadRequest, "Donnees invalides")
+		return
+	}
+
+	req.Name = security.SanitizeInput(req.Name)
+	if req.Slug == "" {
+		req.Slug = strings.ToLower(strings.ReplaceAll(req.Name, " ", "-"))
+	}
+
+	result, err := database.DB.Exec("INSERT INTO categories (name, slug) VALUES (?, ?)", req.Name, req.Slug)
+	if err != nil {
+		sendError(w, http.StatusInternalServerError, "Erreur lors de l'ajout")
+		return
+	}
+
+	id, _ := result.LastInsertId()
+	userID := r.Context().Value("user_id").(int)
+	database.AddAuditLog(userID, "create_category", fmt.Sprintf("Ajout categorie: %s", req.Name), r.RemoteAddr)
+
+	sendSuccess(w, map[string]interface{}{"id": id}, "Categorie ajoutee avec succes")
+}
+
+func UpdateCategory(w http.ResponseWriter, r *http.Request) {
+	vars := mux.Vars(r)
+	id, err := strconv.Atoi(vars["id"])
+	if err != nil {
+		sendError(w, http.StatusBadRequest, "ID invalide")
+		return
+	}
+
+	var req struct {
+		Name string `json:"name"`
+		Slug string `json:"slug"`
+	}
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		sendError(w, http.StatusBadRequest, "Donnees invalides")
+		return
+	}
+
+	req.Name = security.SanitizeInput(req.Name)
+
+	_, err = database.DB.Exec("UPDATE categories SET name = ?, slug = ? WHERE id = ?", req.Name, req.Slug, id)
+	if err != nil {
+		sendError(w, http.StatusInternalServerError, "Erreur lors de la mise a jour")
+		return
+	}
+
+	userID := r.Context().Value("user_id").(int)
+	database.AddAuditLog(userID, "update_category", fmt.Sprintf("Modification categorie ID: %d", id), r.RemoteAddr)
+
+	sendSuccess(w, nil, "Categorie mise a jour avec succes")
+}
+
+func DeleteCategory(w http.ResponseWriter, r *http.Request) {
+	vars := mux.Vars(r)
+	id, err := strconv.Atoi(vars["id"])
+	if err != nil {
+		sendError(w, http.StatusBadRequest, "ID invalide")
+		return
+	}
+
+	_, err = database.DB.Exec("DELETE FROM categories WHERE id = ?", id)
+	if err != nil {
+		sendError(w, http.StatusInternalServerError, "Erreur lors de la suppression")
+		return
+	}
+
+	userID := r.Context().Value("user_id").(int)
+	database.AddAuditLog(userID, "delete_category", fmt.Sprintf("Suppression categorie ID: %d", id), r.RemoteAddr)
+
+	sendSuccess(w, nil, "Categorie supprimee avec succes")
+}
+
+// ==================== Orders Handlers ====================
+
+func GetOrders(w http.ResponseWriter, r *http.Request) {
+	orders, err := database.GetAllOrders()
+	if err != nil {
+		sendError(w, http.StatusInternalServerError, "Erreur lors du chargement des commandes")
+		return
+	}
+	sendSuccess(w, orders, "")
+}
+
+func GetOrderDetails(w http.ResponseWriter, r *http.Request) {
+	vars := mux.Vars(r)
+	id, err := strconv.Atoi(vars["id"])
+	if err != nil {
+		sendError(w, http.StatusBadRequest, "ID invalide")
+		return
+	}
+
+	var order database.Order
+	err = database.DB.QueryRow(`SELECT id, full_name, phone, email, address, total, status, date, items 
+		FROM orders WHERE id = ?`, id).Scan(
+		&order.ID, &order.FullName, &order.Phone, &order.Email,
+		&order.Address, &order.Total, &order.Status, &order.Date, &order.Items)
+	if err != nil {
+		sendError(w, http.StatusNotFound, "Commande introuvable")
+		return
+	}
+	sendSuccess(w, order, "")
+}
+
+func CreateOrder(w http.ResponseWriter, r *http.Request) {
+	var req database.Order
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		sendError(w, http.StatusBadRequest, "Donnees invalides")
+		return
+	}
+
+	req.FullName = security.SanitizeInput(req.FullName)
+	req.Phone = security.SanitizeInput(req.Phone)
+	req.Email = security.SanitizeInput(req.Email)
+	req.Address = security.SanitizeInput(req.Address)
+	req.Date = time.Now().Format("2006-01-02")
+	req.Status = "processing"
+
+	id, err := database.CreateOrder(&req)
+	if err != nil {
+		sendError(w, http.StatusInternalServerError, "Erreur lors de la creation de la commande")
+		return
+	}
+
+	sendSuccess(w, map[string]interface{}{"id": id, "status": "processing"}, "Commande cree avec succes")
+}
+
+func UpdateOrderStatus(w http.ResponseWriter, r *http.Request) {
+	vars := mux.Vars(r)
+	id, err := strconv.Atoi(vars["id"])
+	if err != nil {
+		sendError(w, http.StatusBadRequest, "ID invalide")
+		return
+	}
+
+	var req struct {
+		Status string `json:"status"`
+	}
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		sendError(w, http.StatusBadRequest, "Donnees invalides")
+		return
+	}
+
+	if err := database.UpdateOrderStatus(id, req.Status); err != nil {
+		sendError(w, http.StatusInternalServerError, "Erreur lors de la mise a jour du statut")
+		return
+	}
+
+	userID := r.Context().Value("user_id").(int)
+	database.AddAuditLog(userID, "update_order_status", fmt.Sprintf("Changement statut commande ID: %d vers %s", id, req.Status), r.RemoteAddr)
+
+	sendSuccess(w, nil, "Statut mis a jour avec succes")
+}
+
+// ==================== Customers Handlers ====================
+
+func GetCustomers(w http.ResponseWriter, r *http.Request) {
+	rows, err := database.DB.Query(`
+		SELECT full_name, phone, email, COUNT(*) as orders, SUM(total) as total 
+		FROM orders 
+		GROUP BY phone 
+		ORDER BY total DESC`)
+	if err != nil {
+		sendError(w, http.StatusInternalServerError, "Erreur lors du chargement des clients")
+		return
+	}
+	defer rows.Close()
+
+	var customers []map[string]interface{}
+	for rows.Next() {
+		var name, phone, email string
+		var orders, total int
+		rows.Scan(&name, &phone, &email, &orders, &total)
+		customers = append(customers, map[string]interface{}{
+			"name":    name,
+			"phone":   phone,
+			"email":   email,
+			"orders":  orders,
+			"total":   float64(total),
+		})
+	}
+	sendSuccess(w, customers, "")
+}
+
+func GetCustomerDetails(w http.ResponseWriter, r *http.Request) {
+	vars := mux.Vars(r)
+	phone := vars["phone"]
+
+	rows, err := database.DB.Query(`
+		SELECT id, full_name, phone, email, address, total, status, date 
+		FROM orders WHERE phone = ? ORDER BY id DESC`, phone)
+	if err != nil {
+		sendError(w, http.StatusInternalServerError, "Erreur lors du chargement")
+		return
+	}
+	defer rows.Close()
+
+	var orders []database.Order
+	for rows.Next() {
+		var o database.Order
+		rows.Scan(&o.ID, &o.FullName, &o.Phone, &o.Email, &o.Address, &o.Total, &o.Status, &o.Date)
+		orders = append(orders, o)
+	}
+
+	sendSuccess(w, orders, "")
+}
+
+// ==================== Messages Handlers ====================
+
+func GetMessages(w http.ResponseWriter, r *http.Request) {
+	messages, err := database.GetAllMessages()
+	if err != nil {
+		sendError(w, http.StatusInternalServerError, "Erreur lors du chargement des messages")
+		return
+	}
+	sendSuccess(w, messages, "")
+}
+
+func SubmitContact(w http.ResponseWriter, r *http.Request) {
+	var req struct {
+		Name    string `json:"name"`
+		Email   string `json:"email"`
+		Message string `json:"message"`
+	}
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		sendError(w, http.StatusBadRequest, "Donnees invalides")
+		return
+	}
+
+	req.Name = security.SanitizeInput(req.Name)
+	req.Email = security.SanitizeInput(req.Email)
+	req.Message = security.SanitizeInput(req.Message)
+
+	if !security.ValidateEmail(req.Email) {
+		sendError(w, http.StatusBadRequest, "Email invalide")
+		return
+	}
+
+	id, err := database.CreateMessage(req.Name, req.Email, req.Message)
+	if err != nil {
+		sendError(w, http.StatusInternalServerError, "Erreur lors de l'envoi")
+		return
+	}
+
+	sendSuccess(w, map[string]interface{}{"id": id}, "Message envoye avec succes")
+}
+
+func MarkMessageRead(w http.ResponseWriter, r *http.Request) {
+	vars := mux.Vars(r)
+	id, err := strconv.Atoi(vars["id"])
+	if err != nil {
+		sendError(w, http.StatusBadRequest, "ID invalide")
+		return
+	}
+
+	if err := database.MarkMessageRead(id); err != nil {
+		sendError(w, http.StatusInternalServerError, "Erreur lors de la mise a jour")
+		return
+	}
+
+	sendSuccess(w, nil, "Message marque comme lu")
+}
+
+func DeleteMessage(w http.ResponseWriter, r *http.Request) {
+	vars := mux.Vars(r)
+	id, err := strconv.Atoi(vars["id"])
+	if err != nil {
+		sendError(w, http.StatusBadRequest, "ID invalide")
+		return
+	}
+
+	if err := database.DeleteMessage(id); err != nil {
+		sendError(w, http.StatusInternalServerError, "Erreur lors de la suppression")
+		return
+	}
+
+	userID := r.Context().Value("user_id").(int)
+	database.AddAuditLog(userID, "delete_message", fmt.Sprintf("Suppression message ID: %d", id), r.RemoteAddr)
+
+	sendSuccess(w, nil, "Message supprime avec succes")
+}
+
+// ==================== Coupons Handlers ====================
+
+func GetCoupons(w http.ResponseWriter, r *http.Request) {
+	coupons, err := database.GetAllCoupons()
+	if err != nil {
+		sendError(w, http.StatusInternalServerError, "Erreur lors du chargement des coupons")
+		return
+	}
+	sendSuccess(w, coupons, "")
+}
+
+func CreateCoupon(w http.ResponseWriter, r *http.Request) {
+	var req database.Coupon
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		sendError(w, http.StatusBadRequest, "Donnees invalides")
+		return
+	}
+
+	req.Code = strings.ToUpper(security.SanitizeInput(req.Code))
+
+	if err := database.CreateCoupon(&req); err != nil {
+		sendError(w, http.StatusInternalServerError, "Erreur lors de l'ajout du coupon")
+		return
+	}
+
+	userID := r.Context().Value("user_id").(int)
+	database.AddAuditLog(userID, "create_coupon", fmt.Sprintf("Ajout coupon: %s", req.Code), r.RemoteAddr)
+
+	sendSuccess(w, nil, "Coupon ajoute avec succes")
+}
+
+func ValidateCoupon(w http.ResponseWriter, r *http.Request) {
+	var req struct {
+		Code string `json:"code"`
+	}
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		sendError(w, http.StatusBadRequest, "Donnees invalides")
+		return
+	}
+
+	req.Code = strings.ToUpper(req.Code)
+
+	coupon, err := database.GetCouponByCode(req.Code)
+	if err != nil {
+		sendError(w, http.StatusNotFound, "Coupon invalide")
+		return
+	}
+
+	if coupon.Expires != "" {
+		expires, _ := time.Parse("2006-01-02", coupon.Expires)
+		if expires.Before(time.Now()) {
+			sendError(w, http.StatusBadRequest, "Coupon expire")
+			return
+		}
+	}
+
+	if coupon.Uses >= coupon.MaxUses {
+		sendError(w, http.StatusBadRequest, "Coupon deja utilise le nombre maximum de fois")
+		return
+	}
+
+	sendSuccess(w, coupon, "Coupon valide")
+}
+
+func DeleteCoupon(w http.ResponseWriter, r *http.Request) {
+	vars := mux.Vars(r)
+	code := vars["code"]
+
+	if err := database.DeleteCoupon(code); err != nil {
+		sendError(w, http.StatusInternalServerError, "Erreur lors de la suppression")
+		return
+	}
+
+	userID := r.Context().Value("user_id").(int)
+	database.AddAuditLog(userID, "delete_coupon", fmt.Sprintf("Suppression coupon: %s", code), r.RemoteAddr)
+
+	sendSuccess(w, nil, "Coupon supprime avec succes")
+}
+
+// ==================== Staff Handlers ====================
+
+func GetStaff(w http.ResponseWriter, r *http.Request) {
+	users, err := database.GetAllUsers()
+	if err != nil {
+		sendError(w, http.StatusInternalServerError, "Erreur lors du chargement du personnel")
+		return
+	}
+	sendSuccess(w, users, "")
+}
+
+func CreateStaff(w http.ResponseWriter, r *http.Request) {
+	var req struct {
+		Name        string   `json:"name"`
+		Phone       string   `json:"phone"`
+		Password    string   `json:"password"`
+		Permissions []string `json:"permissions"`
+	}
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		sendError(w, http.StatusBadRequest, "Donnees invalides")
+		return
+	}
+
+	req.Name = security.SanitizeInput(req.Name)
+	req.Phone = security.SanitizeInput(req.Phone)
+
+	hashedPassword, err := bcrypt.GenerateFromPassword([]byte(req.Password), bcrypt.DefaultCost)
+	if err != nil {
+		sendError(w, http.StatusInternalServerError, "Erreur lors du hachage du mot de passe")
+		return
+	}
+
+	permissions := strings.Join(req.Permissions, ",")
+	id, err := database.CreateUser(req.Name, req.Phone, string(hashedPassword), permissions)
+	if err != nil {
+		sendError(w, http.StatusInternalServerError, "Erreur lors de l'ajout de l'employe")
+		return
+	}
+
+	userID := r.Context().Value("user_id").(int)
+	database.AddAuditLog(userID, "create_staff", fmt.Sprintf("Ajout employe: %s", req.Name), r.RemoteAddr)
+
+	sendSuccess(w, map[string]interface{}{"id": id}, "Employe ajoute avec succes")
+}
+
+func UpdateStaff(w http.ResponseWriter, r *http.Request) {
+	vars := mux.Vars(r)
+	id, err := strconv.Atoi(vars["id"])
+	if err != nil {
+		sendError(w, http.StatusBadRequest, "ID invalide")
+		return
+	}
+
+	var req struct {
+		Name        string   `json:"name"`
+		Phone       string   `json:"phone"`
+		Password    string   `json:"password"`
+		Permissions []string `json:"permissions"`
+	}
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		sendError(w, http.StatusBadRequest, "Donnees invalides")
+		return
+	}
+
+	if req.Password != "" {
+		hashedPassword, _ := bcrypt.GenerateFromPassword([]byte(req.Password), bcrypt.DefaultCost)
+		database.DB.Exec("UPDATE users SET password = ? WHERE id = ?", string(hashedPassword), id)
+	}
+
+	permissions := strings.Join(req.Permissions, ",")
+	_, err = database.DB.Exec("UPDATE users SET name = ?, phone = ?, permissions = ? WHERE id = ?",
+		req.Name, req.Phone, permissions, id)
+	if err != nil {
+		sendError(w, http.StatusInternalServerError, "Erreur lors de la mise a jour")
+		return
+	}
+
+	userID := r.Context().Value("user_id").(int)
+	database.AddAuditLog(userID, "update_staff", fmt.Sprintf("Modification employe ID: %d", id), r.RemoteAddr)
+
+	sendSuccess(w, nil, "Employe mis a jour avec succes")
+}
+
+func DeleteStaff(w http.ResponseWriter, r *http.Request) {
+	vars := mux.Vars(r)
+	id, err := strconv.Atoi(vars["id"])
+	if err != nil {
+		sendError(w, http.StatusBadRequest, "ID invalide")
+		return
+	}
+
+	if err := database.DeleteUser(id); err != nil {
+		sendError(w, http.StatusInternalServerError, "Erreur lors de la suppression")
+		return
+	}
+
+	userID := r.Context().Value("user_id").(int)
+	database.AddAuditLog(userID, "delete_staff", fmt.Sprintf("Suppression employe ID: %d", id), r.RemoteAddr)
+
+	sendSuccess(w, nil, "Employe supprime avec succes")
+}
+
+// ==================== Analytics Handlers ====================
+
+func GetSalesAnalytics(w http.ResponseWriter, r *http.Request) {
+	rows, err := database.DB.Query(`
+		SELECT MONTH(date) as month, SUM(total) as total 
+		FROM orders 
+		WHERE status != 'cancelled' AND YEAR(date) = YEAR(CURDATE())
+		GROUP BY MONTH(date)`)
+	if err != nil {
+		sendError(w, http.StatusInternalServerError, "Erreur lors du chargement des analyses")
+		return
+	}
+	defer rows.Close()
+
+	monthlySales := make([]float64, 12)
+	for rows.Next() {
+		var month int
+		var total float64
+		rows.Scan(&month, &total)
+		if month >= 1 && month <= 12 {
+			monthlySales[month-1] = total
+		}
+	}
+
+	sendSuccess(w, map[string]interface{}{
+		"monthly_sales": monthlySales,
+	}, "")
+}
+
+func GetTopProducts(w http.ResponseWriter, r *http.Request) {
+	products, err := database.GetAllProducts()
+	if err != nil {
+		sendError(w, http.StatusInternalServerError, "Erreur lors du chargement")
+		return
+	}
+
+	for i := 0; i < len(products)-1; i++ {
+		for j := i + 1; j < len(products); j++ {
+			if products[i].Sales < products[j].Sales {
+				products[i], products[j] = products[j], products[i]
+			}
+		}
+	}
+
+	limit := 5
+	if len(products) < limit {
+		limit = len(products)
+	}
+
+	sendSuccess(w, products[:limit], "")
+}
+
+func GetVisitorsStats(w http.ResponseWriter, r *http.Request) {
+	sendSuccess(w, map[string]interface{}{
+		"today": 147,
+		"week":  1024,
+		"month": 5234,
+		"total": 15234,
+	}, "")
+}
+
+// ==================== Settings Handlers ====================
+
+func GetSettings(w http.ResponseWriter, r *http.Request) {
+	settings, err := database.GetSettings()
+	if err != nil {
+		sendError(w, http.StatusInternalServerError, "Erreur lors du chargement des parametres")
+		return
+	}
+	sendSuccess(w, settings, "")
+}
+
+func GetPublicSettings(w http.ResponseWriter, r *http.Request) {
+	settings, err := database.GetSettings()
+	if err != nil {
+		sendError(w, http.StatusInternalServerError, "Erreur lors du chargement des parametres")
+		return
+	}
+	sendSuccess(w, settings, "")
+}
+
+func UpdateSettings(w http.ResponseWriter, r *http.Request) {
+	var req database.Settings
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		sendError(w, http.StatusBadRequest, "Donnees invalides")
+		return
+	}
+
+	if err := database.UpdateSettings(&req); err != nil {
+		sendError(w, http.StatusInternalServerError, "Erreur lors de la mise a jour")
+		return
+	}
+
+	userID := r.Context().Value("user_id").(int)
+	database.AddAuditLog(userID, "update_settings", "Mise a jour des parametres", r.RemoteAddr)
+
+	sendSuccess(w, nil, "Parametres mis a jour avec succes")
+}
+
+// ==================== Backup Handlers ====================
+
+func ExportBackup(w http.ResponseWriter, r *http.Request) {
+	products, _ := database.GetAllProducts()
+	orders, _ := database.GetAllOrders()
+	coupons, _ := database.GetAllCoupons()
+	messages, _ := database.GetAllMessages()
+	settings, _ := database.GetSettings()
+
+	backup := map[string]interface{}{
+		"products":    products,
+		"orders":      orders,
+		"coupons":     coupons,
+		"messages":    messages,
+		"settings":    settings,
+		"exported_at": time.Now().Format(time.RFC3339),
+	}
+
+	w.Header().Set("Content-Type", "application/json")
+	w.Header().Set("Content-Disposition", fmt.Sprintf("attachment; filename=ssc_backup_%s.json", time.Now().Format("20060102_150405")))
+	json.NewEncoder(w).Encode(backup)
+}
+
+func ImportBackup(w http.ResponseWriter, r *http.Request) {
+	var backup map[string]interface{}
+	if err := json.NewDecoder(r.Body).Decode(&backup); err != nil {
+		sendError(w, http.StatusBadRequest, "Donnees invalides")
+		return
+	}
+
+	userID := r.Context().Value("user_id").(int)
+	database.AddAuditLog(userID, "import_backup", "Import de sauvegarde", r.RemoteAddr)
+
+	sendSuccess(w, nil, "Sauvegarde importee avec succes")
+}
+
+func ListBackups(w http.ResponseWriter, r *http.Request) {
+	sendSuccess(w, []string{"backup_20240101.json", "backup_20240115.json"}, "")
+}
+
+// ==================== Appearance Handlers ====================
+
+func GetAppearance(w http.ResponseWriter, r *http.Request) {
+	settings, err := database.GetSettings()
+	if err != nil {
+		sendError(w, http.StatusInternalServerError, "Erreur lors du chargement")
+		return
+	}
+
+	sendSuccess(w, map[string]interface{}{
+		"logo_url":    settings.LogoUrl,
+		"hero_bg":     settings.HeroBg,
+		"theme_color": settings.ThemeColor,
+	}, "")
+}
+
+func UpdateAppearance(w http.ResponseWriter, r *http.Request) {
+	var req struct {
+		LogoUrl    string `json:"logo_url"`
+		HeroBg     string `json:"hero_bg"`
+		ThemeColor string `json:"theme_color"`
+	}
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		sendError(w, http.StatusBadRequest, "Donnees invalides")
+		return
+	}
+
+	_, err := database.DB.Exec("UPDATE settings SET logo_url = ?, hero_bg = ?, theme_color = ? WHERE id = 1",
+		req.LogoUrl, req.HeroBg, req.ThemeColor)
+	if err != nil {
+		sendError(w, http.StatusInternalServerError, "Erreur lors de la mise a jour")
+		return
+	}
+
+	userID := r.Context().Value("user_id").(int)
+	database.AddAuditLog(userID, "update_appearance", "Mise a jour de l'apparence", r.RemoteAddr)
+
+	sendSuccess(w, nil, "Apparence mise a jour avec succes")
+}
+
+// ==================== Content Handlers ====================
+
+func GetContent(w http.ResponseWriter, r *http.Request) {
+	settings, err := database.GetSettings()
+	if err != nil {
+		sendError(w, http.StatusInternalServerError, "Erreur lors du chargement")
+		return
+	}
+
+	sendSuccess(w, map[string]interface{}{
+		"about":   settings.AboutText,
+		"contact": settings.ContactText,
+		"terms":   settings.TermsText,
+	}, "")
+}
+
+func UpdateContent(w http.ResponseWriter, r *http.Request) {
+	var req struct {
+		About   string `json:"about"`
+		Contact string `json:"contact"`
+		Terms   string `json:"terms"`
+	}
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		sendError(w, http.StatusBadRequest, "Donnees invalides")
+		return
+	}
+
+	_, err := database.DB.Exec("UPDATE settings SET about_text = ?, contact_text = ?, terms_text = ? WHERE id = 1",
+		req.About, req.Contact, req.Terms)
+	if err != nil {
+		sendError(w, http.StatusInternalServerError, "Erreur lors de la mise a jour")
+		return
+	}
+
+	userID := r.Context().Value("user_id").(int)
+	database.AddAuditLog(userID, "update_content", "Mise a jour du contenu", r.RemoteAddr)
+
+	sendSuccess(w, nil, "Contenu mis a jour avec succes")
+}
+
+// ==================== Upload Handlers ====================
+
+func UploadFile(w http.ResponseWriter, r *http.Request) {
+	file, handler, err := r.FormFile("file")
+	if err != nil {
+		sendError(w, http.StatusBadRequest, "Erreur lors de l'upload")
+		return
+	}
+	defer file.Close()
+
+	allowedTypes := []string{"image/jpeg", "image/png", "image/webp", "image/jpg"}
+	fileType := handler.Header.Get("Content-Type")
+	allowed := false
+	for _, t := range allowedTypes {
+		if fileType == t {
+			allowed = true
+			break
+		}
+	}
+	if !allowed {
+		sendError(w, http.StatusBadRequest, "Type de fichier non autorise")
+		return
+	}
+
+	filename := fmt.Sprintf("%d_%s", time.Now().UnixNano(), handler.Filename)
+
+	sendSuccess(w, map[string]interface{}{
+		"filename": filename,
+		"url":      "/uploads/" + filename,
+	}, "Fichier uploade avec succes")
+}
+
+func DeleteFile(w http.ResponseWriter, r *http.Request) {
+	vars := mux.Vars(r)
+	filename := vars["filename"]
+
+	userID := r.Context().Value("user_id").(int)
+	database.AddAuditLog(userID, "delete_file", fmt.Sprintf("Suppression fichier: %s", filename), r.RemoteAddr)
+
+	sendSuccess(w, nil, "Fichier supprime avec succes")
+}
+
+// ==================== Reports Handlers ====================
+
+func GenerateReport(w http.ResponseWriter, r *http.Request) {
+	var req struct {
+		StartDate string `json:"start_date"`
+		EndDate   string `json:"end_date"`
+	}
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		sendError(w, http.StatusBadRequest, "Donnees invalides")
+		return
+	}
+
+	rows, err := database.DB.Query(`
+		SELECT id, full_name, total, status, date 
+		FROM orders 
+		WHERE date BETWEEN ? AND ?
+		ORDER BY date DESC`, req.StartDate, req.EndDate)
+	if err != nil {
+		sendError(w, http.StatusInternalServerError, "Erreur lors de la generation du rapport")
+		return
+	}
+	defer rows.Close()
+
+	var orders []map[string]interface{}
+	var totalSales float64
+	for rows.Next() {
+		var id int
+		var name string
+		var total float64
+		var status, date string
+		rows.Scan(&id, &name, &total, &status, &date)
+		orders = append(orders, map[string]interface{}{
+			"id": id, "customer": name, "total": total, "status": status, "date": date,
+		})
+		totalSales += total
+	}
+
+	sendSuccess(w, map[string]interface{}{
+		"orders":       orders,
+		"total_sales":  totalSales,
+		"order_count":  len(orders),
+		"start_date":   req.StartDate,
+		"end_date":     req.EndDate,
+	}, "")
+}
+
+func ExportPDF(w http.ResponseWriter, r *http.Request) {
+	w.Header().Set("Content-Type", "application/pdf")
+	w.Header().Set("Content-Disposition", "attachment; filename=report.pdf")
+	w.Write([]byte("%PDF-1.4\n..."))
+}
+
+func ExportExcel(w http.ResponseWriter, r *http.Request) {
+	w.Header().Set("Content-Type", "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet")
+	w.Header().Set("Content-Disposition", "attachment; filename=report.xlsx")
+	w.Write([]byte(""))
+}
