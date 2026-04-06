@@ -1,0 +1,443 @@
+package seeders
+
+import (
+    "log"
+    "time"
+
+    "ssc-admin/database"
+    "golang.org/x/crypto/bcrypt"
+)
+
+// Run - execution des donnees de demo (pour developpement uniquement)
+func Run() error {
+    log.Println("🌱 Insertion des donnees de demo...")
+
+    // Verification si des donnees existent deja
+    var count int
+    database.DB.QueryRow("SELECT COUNT(*) FROM products").Scan(&count)
+    if count > 0 {
+        log.Println("📦 Les donnees existent deja, execution du seeder ignoree")
+        return nil
+    }
+
+    // ==================== 1. Insertion des categories ====================
+    categories := []struct {
+        Name string
+        Slug string
+    }{
+        {"Cameras", "cameras"},
+        {"Alarms", "alarms"},
+        {"Control Access", "access"},
+        {"Storage", "storage"},
+        {"Accessories", "accessories"},
+    }
+
+    for _, c := range categories {
+        _, err := database.DB.Exec(`INSERT INTO categories (name, slug) VALUES (?, ?)`, c.Name, c.Slug)
+        if err != nil {
+            log.Printf("⚠️ Erreur ajout categorie %s: %v", c.Name, err)
+        }
+    }
+    log.Println("✅ 5 categories inserees")
+
+    // ==================== 2. Insertion des produits ====================
+    products := []struct {
+        Name        string
+        Category    string
+        Price       float64
+        OldPrice    float64
+        Image       string
+        Description string
+        Stock       string
+        Features    string
+        Sales       int
+    }{
+        {
+            Name:        "Camera HD 4MP Night Vision",
+            Category:    "cameras",
+            Price:       299.99,
+            OldPrice:    349.99,
+            Image:       "/uploads/camera1.jpg",
+            Description: "Camera exterieure 4MP avec vision nocturne infrarouge et detection de mouvement intelligente. Ideale pour la surveillance exterieure jour et nuit.",
+            Stock:       "available",
+            Features:    "4MP,Infrarouge,IP66,Detection IA",
+            Sales:       28,
+        },
+        {
+            Name:        "Wireless Alarm Kit",
+            Category:    "alarms",
+            Price:       499.99,
+            OldPrice:    599.99,
+            Image:       "/uploads/alarme1.jpg",
+            Description: "Kit complet d'alarme sans fil avec 3 detecteurs, sirene 110dB et application mobile. Controle a distance et notifications en temps reel.",
+            Stock:       "available",
+            Features:    "Sans fil,Application mobile,110dB,3 detecteurs",
+            Sales:       15,
+        },
+        {
+            Name:        "Biometric Access Control",
+            Category:    "access",
+            Price:       399.99,
+            OldPrice:    449.99,
+            Image:       "/uploads/biometric.jpg",
+            Description: "Controle d'acces par empreinte digitale et carte RFID pour 1000 utilisateurs. Interface intuitive et historique des acces.",
+            Stock:       "low",
+            Features:    "Empreinte,RFID,1000 utilisateurs,IP54",
+            Sales:       8,
+        },
+        {
+            Name:        "8 Channel 4K DVR",
+            Category:    "storage",
+            Price:       349.99,
+            OldPrice:    399.99,
+            Image:       "/uploads/dvr.jpg",
+            Description: "Enregistreur 8 canaux 4K avec disque dur 2TB inclus et compression H.265. Visionnage a distance sur mobile et PC.",
+            Stock:       "available",
+            Features:    "8 canaux,4K,2TB,H.265",
+            Sales:       12,
+        },
+        {
+            Name:        "PIR Motion Detector",
+            Category:    "alarms",
+            Price:       49.99,
+            OldPrice:    0,
+            Image:       "/uploads/detector.jpg",
+            Description: "Detecteur de mouvement infrarouge passif avec portee 12m et angle 90°. Ideal pour les systemes d'alarme.",
+            Stock:       "available",
+            Features:    "Infrarouge,12m,90°,Anti-masque",
+            Sales:       35,
+        },
+        {
+            Name:        "360 Degree WiFi Camera",
+            Category:    "cameras",
+            Price:       159.99,
+            OldPrice:    199.99,
+            Image:       "/uploads/camera360.jpg",
+            Description: "Camera interieure panoramique avec suivi automatique, vision nocturne et audio bidirectionnel. Controle via application.",
+            Stock:       "available",
+            Features:    "WiFi,360°,Suivi auto,Audio bidirectionnel",
+            Sales:       22,
+        },
+        {
+            Name:        "Outdoor Siren",
+            Category:    "alarms",
+            Price:       79.99,
+            OldPrice:    0,
+            Image:       "/uploads/sirene.jpg",
+            Description: "Sirene exterieure puissante 120dB avec flash LED et boitier IP65. Resiste aux intemperies.",
+            Stock:       "available",
+            Features:    "120dB,LED,IP65,Anti-arrachement",
+            Sales:       18,
+        },
+        {
+            Name:        "20X PTZ Camera",
+            Category:    "cameras",
+            Price:       899.99,
+            OldPrice:    1099.99,
+            Image:       "/uploads/ptz.jpg",
+            Description: "Camera motorisee PTZ 20x zoom optique, autotracking et WDR. Ideale pour la surveillance de grandes surfaces.",
+            Stock:       "available",
+            Features:    "PTZ,20x zoom,Autotracking,WDR",
+            Sales:       5,
+        },
+        {
+            Name:        "RFID Reader",
+            Category:    "access",
+            Price:       129.99,
+            OldPrice:    0,
+            Image:       "/uploads/rfid.jpg",
+            Description: "Lecteur de badges RFID pour controle d'acces, compatible Wiegand. Installation facile.",
+            Stock:       "available",
+            Features:    "RFID,Wiegand,IP65,125kHz/13.56MHz",
+            Sales:       10,
+        },
+        {
+            Name:        "Alarm Backup Battery",
+            Category:    "accessories",
+            Price:       29.99,
+            OldPrice:    0,
+            Image:       "/uploads/battery.jpg",
+            Description: "Batterie de secours pour systeme d'alarme, autonomie 24h. Sans entretien.",
+            Stock:       "low",
+            Features:    "12V,7Ah,Sans entretien",
+            Sales:       45,
+        },
+    }
+
+    for _, p := range products {
+        _, err := database.DB.Exec(`
+            INSERT INTO products (name, category, price, old_price, image, description, stock, features, sales) 
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+            p.Name, p.Category, p.Price, p.OldPrice, p.Image, p.Description, p.Stock, p.Features, p.Sales)
+        if err != nil {
+            log.Printf("⚠️ Erreur ajout produit %s: %v", p.Name, err)
+        }
+    }
+    log.Println("✅ 10 produits inseres")
+
+    // ==================== 3. Insertion des utilisateurs ====================
+    // admin123 (hash)
+    hashedPassword, _ := bcrypt.GenerateFromPassword([]byte("admin123"), bcrypt.DefaultCost)
+
+    users := []struct {
+        Name        string
+        Phone       string
+        Password    string
+        Permissions string
+    }{
+        {
+            Name:        "Administrateur",
+            Phone:       "admin",
+            Password:    string(hashedPassword),
+            Permissions: "products,categories,orders,customers,messages,coupons,staff,reports,content,appearance,backup,settings",
+        },
+        {
+            Name:        "Ahmed Ben Ali",
+            Phone:       "20123456",
+            Password:    string(hashedPassword),
+            Permissions: "products,orders,customers,messages",
+        },
+        {
+            Name:        "Sami Trabelsi",
+            Phone:       "22123456",
+            Password:    string(hashedPassword),
+            Permissions: "products,reports",
+        },
+    }
+
+    for _, u := range users {
+        _, err := database.DB.Exec(`
+            INSERT INTO users (name, phone, password, permissions) VALUES (?, ?, ?, ?)`,
+            u.Name, u.Phone, u.Password, u.Permissions)
+        if err != nil {
+            log.Printf("⚠️ Erreur ajout utilisateur %s: %v", u.Name, err)
+        }
+    }
+    log.Println("✅ 3 utilisateurs inseres (admin/admin123)")
+
+    // ==================== 4. Insertion des commandes ====================
+    orders := []struct {
+        FullName string
+        Phone    string
+        Email    string
+        Address  string
+        Total    float64
+        Status   string
+        Date     string
+        Items    string
+    }{
+        {
+            FullName: "Jean Dupont",
+            Phone:    "0612345678",
+            Email:    "jean.dupont@email.com",
+            Address:  "12 rue de Paris, 75001 Paris, France",
+            Total:    299.99,
+            Status:   "delivered",
+            Date:     "2024-01-15",
+            Items:    `[{"name":"Camera HD 4MP Night Vision","price":299.99,"quantity":1}]`,
+        },
+        {
+            FullName: "Marie Martin",
+            Phone:    "0623456789",
+            Email:    "marie.martin@email.com",
+            Address:  "45 avenue des Lys, 69002 Lyon, France",
+            Total:    499.99,
+            Status:   "confirmed",
+            Date:     "2024-01-20",
+            Items:    `[{"name":"Wireless Alarm Kit","price":499.99,"quantity":1}]`,
+        },
+        {
+            FullName: "Pierre Bernard",
+            Phone:    "0634567890",
+            Email:    "pierre.bernard@email.com",
+            Address:  "8 rue des Oliviers, 13001 Marseille, France",
+            Total:    399.99,
+            Status:   "processing",
+            Date:     "2024-01-25",
+            Items:    `[{"name":"Biometric Access Control","price":399.99,"quantity":1}]`,
+        },
+        {
+            FullName: "Sophie Dubois",
+            Phone:    "0645678901",
+            Email:    "sophie.dubois@email.com",
+            Address:  "23 boulevard de la Mer, 33000 Bordeaux, France",
+            Total:    549.98,
+            Status:   "delivered",
+            Date:     "2024-02-01",
+            Items:    `[{"name":"8 Channel 4K DVR","price":349.99,"quantity":1},{"name":"360 Degree WiFi Camera","price":199.99,"quantity":1}]`,
+        },
+        {
+            FullName: "Thomas Leroy",
+            Phone:    "0656789012",
+            Email:    "thomas.leroy@email.com",
+            Address:  "67 rue Centrale, 59000 Lille, France",
+            Total:    129.98,
+            Status:   "confirmed",
+            Date:     "2024-02-05",
+            Items:    `[{"name":"PIR Motion Detector","price":49.99,"quantity":2},{"name":"Outdoor Siren","price":79.99,"quantity":1}]`,
+        },
+        {
+            FullName: "Julie Moreau",
+            Phone:    "0667890123",
+            Email:    "julie.moreau@email.com",
+            Address:  "15 place du Marche, 31000 Toulouse, France",
+            Total:    799.98,
+            Status:   "processing",
+            Date:     "2024-02-08",
+            Items:    `[{"name":"Wireless Alarm Kit","price":499.99,"quantity":1},{"name":"Camera HD 4MP Night Vision","price":299.99,"quantity":1}]`,
+        },
+        {
+            FullName: "Nicolas Petit",
+            Phone:    "0678901234",
+            Email:    "nicolas.petit@email.com",
+            Address:  "34 rue des Ecoles, 44000 Nantes, France",
+            Total:    449.98,
+            Status:   "delivered",
+            Date:     "2024-02-10",
+            Items:    `[{"name":"360 Degree WiFi Camera","price":199.99,"quantity":2},{"name":"PIR Motion Detector","price":49.99,"quantity":1}]`,
+        },
+        {
+            FullName: "Mohamed Ali",
+            Phone:    "20123456",
+            Email:    "med.ali@email.tn",
+            Address:  "Centre Urbain Nord, Tunis, Tunisie",
+            Total:    299.99,
+            Status:   "delivered",
+            Date:     "2024-02-15",
+            Items:    `[{"name":"Camera HD 4MP Night Vision","price":299.99,"quantity":1}]`,
+        },
+        {
+            FullName: "Yasmine Ben Salah",
+            Phone:    "22123456",
+            Email:    "yasmine.bensalah@email.tn",
+            Address:  "Les Berges du Lac, Tunis, Tunisie",
+            Total:    899.99,
+            Status:   "confirmed",
+            Date:     "2024-02-18",
+            Items:    `[{"name":"20X PTZ Camera","price":899.99,"quantity":1}]`,
+        },
+        {
+            FullName: "Karim Jaziri",
+            Phone:    "23123456",
+            Email:    "karim.jaziri@email.tn",
+            Address:  "Sousse, Tunisie",
+            Total:    479.98,
+            Status:   "processing",
+            Date:     "2024-02-20",
+            Items:    `[{"name":"Biometric Access Control","price":399.99,"quantity":1},{"name":"PIR Motion Detector","price":79.99,"quantity":1}]`,
+        },
+    }
+
+    for _, o := range orders {
+        _, err := database.DB.Exec(`
+            INSERT INTO orders (full_name, phone, email, address, total, status, date, items) 
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?)`,
+            o.FullName, o.Phone, o.Email, o.Address, o.Total, o.Status, o.Date, o.Items)
+        if err != nil {
+            log.Printf("⚠️ Erreur ajout commande pour %s: %v", o.FullName, err)
+        }
+    }
+    log.Println("✅ 10 commandes inserees")
+
+    // ==================== 5. Insertion des coupons ====================
+    coupons := []struct {
+        Code     string
+        Discount float64
+        Type     string
+        MaxUses  int
+        Uses     int
+        Expires  string
+    }{
+        {"WELCOME10", 10, "percent", 50, 12, "2024-12-31"},
+        {"SSC20", 20, "percent", 100, 5, "2024-06-30"},
+        {"SUMMER50", 50, "fixed", 30, 8, "2024-08-31"},
+        {"TUNISIA25", 25, "percent", 200, 0, "2024-12-31"},
+        {"FREESHIP", 15, "fixed", 500, 127, "2024-12-31"},
+    }
+
+    for _, c := range coupons {
+        _, err := database.DB.Exec(`
+            INSERT INTO coupons (code, discount, type, max_uses, uses, expires) 
+            VALUES (?, ?, ?, ?, ?, ?)`,
+            c.Code, c.Discount, c.Type, c.MaxUses, c.Uses, c.Expires)
+        if err != nil {
+            log.Printf("⚠️ Erreur ajout coupon %s: %v", c.Code, err)
+        }
+    }
+    log.Println("✅ 5 coupons inseres")
+
+    // ==================== 6. Insertion des messages ====================
+    messages := []struct {
+        Name    string
+        Email   string
+        Message string
+        Date    string
+        IsRead  int
+    }{
+        {
+            Name:    "Jean Dupont",
+            Email:   "jean.dupont@email.com",
+            Message: "Bonjour, je souhaite un devis pour 5 cameras exterieures avec installation. Pouvez-vous me contacter ?",
+            Date:    "2024-02-10",
+            IsRead:  0,
+        },
+        {
+            Name:    "Marie Martin",
+            Email:   "marie.martin@email.com",
+            Message: "Quel est le delai de livraison pour le kit alarme ? J'ai besoin de le recevoir avant le 15 mars.",
+            Date:    "2024-02-12",
+            IsRead:  0,
+        },
+        {
+            Name:    "Sophie Dubois",
+            Email:   "sophie.dubois@email.com",
+            Message: "Est-ce que les produits sont garantis ? Combien de temps ?",
+            Date:    "2024-02-14",
+            IsRead:  1,
+        },
+        {
+            Name:    "Mohamed Ali",
+            Email:   "med.ali@email.tn",
+            Message: "Est-ce que vous livrez a Sfax ? J'ai besoin de 2 cameras.",
+            Date:    "2024-02-15",
+            IsRead:  0,
+        },
+        {
+            Name:    "Thomas Leroy",
+            Email:   "thomas.leroy@email.com",
+            Message: "Probleme avec ma commande #5, le detecteur ne fonctionne pas correctement. J'aimerais un remplacement.",
+            Date:    "2024-02-16",
+            IsRead:  0,
+        },
+        {
+            Name:    "Yasmine Ben Salah",
+            Email:   "yasmine.bensalah@email.tn",
+            Message: "Merci pour la livraison rapide ! Les produits sont conformes. Je recommande vivement.",
+            Date:    "2024-02-18",
+            IsRead:  1,
+        },
+    }
+
+    for _, m := range messages {
+        _, err := database.DB.Exec(`
+            INSERT INTO messages (name, email, message, date, is_read) 
+            VALUES (?, ?, ?, ?, ?)`,
+            m.Name, m.Email, m.Message, m.Date, m.IsRead)
+        if err != nil {
+            log.Printf("⚠️ Erreur ajout message de %s: %v", m.Name, err)
+        }
+    }
+    log.Println("✅ 6 messages inseres")
+
+    log.Println("\n🎉 Donnees de demo inserees avec succes!")
+    log.Println("📊 Resume des donnees:")
+    log.Println("   - 5 categories")
+    log.Println("   - 10 produits")
+    log.Println("   - 3 utilisateurs (admin/admin123)")
+    log.Println("   - 10 commandes")
+    log.Println("   - 5 coupons")
+    log.Println("   - 6 messages")
+    log.Println("   - Parametres du site")
+
+    return nil
+}
